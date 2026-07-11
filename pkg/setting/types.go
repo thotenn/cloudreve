@@ -89,6 +89,41 @@ type (
 		MaxRetry           int
 		RetryDelay         time.Duration
 	}
+
+	// MediaProcessSetting carries the media post-processing (image compression)
+	// parameters (APP-101), all editable from the admin panel.
+	MediaProcessSetting struct {
+		ImageEnabled bool   // master switch for image compression
+		Engine       string // "vips" | "ffmpeg"
+		WorkerNum    int    // compression concurrency (dedicated key; default 1)
+		BatchSize    int    // max rows the cron enqueues per run
+		Quality      int    // 1..100
+		Format       string // "keep" | "webp" | "jpeg" | "png"
+		ExtraArgs    string // extra engine flags
+		ResultMode   string // "version" | "replace" | "auto"
+		MinSize      int64  // skip blobs smaller than this (bytes)
+	}
+
+	// MediaProcessVideoSetting carries the deferred video transcoding parameters
+	// (APP-103), all editable from the admin panel. The engine is always ffmpeg
+	// (vips does not process video). Video runs on its own dedicated queue so a
+	// long transcode never blocks image compression.
+	MediaProcessVideoSetting struct {
+		Enabled       bool   // master switch for video transcoding
+		Codec         string // video codec, e.g. "libx264" | "libx265"
+		CRF           int    // constant rate factor (lower = better quality/bigger)
+		Preset        string // ffmpeg preset (speed/size trade-off), e.g. "medium"
+		Container     string // "keep" | "mp4" | "webm" — output container/extension
+		MaxResolution string // downscale cap, e.g. "1920x1080" (empty = no cap)
+		AudioCodec    string // audio codec, e.g. "aac"
+		AudioBitrate  string // audio bitrate, e.g. "128k"
+		ExtraArgs     string // extra ffmpeg flags
+		WorkerNum     int    // transcoding concurrency (dedicated key; default 1)
+		BatchSize     int    // max rows the cron enqueues per run
+		Threads       int    // ffmpeg -threads per encode (approximate CPU cap)
+		Nice          bool   // run ffmpeg at low priority (best effort, non-Windows)
+		MinSize       int64  // skip blobs smaller than this (bytes)
+	}
 )
 
 type ThumbEncode struct {
@@ -103,6 +138,11 @@ var (
 	QueueTypeEntityRecycle  = QueueType("recycle")
 	QueueTypeSlave          = QueueType("slave")
 	QueueTypeRemoteDownload = QueueType("remote_download")
+	QueueTypeMediaProcess   = QueueType("media_process")
+	// QueueTypeMediaProcessVideo is the dedicated queue for video transcoding
+	// (APP-103), kept separate from media_process so a long transcode does not
+	// block image compression.
+	QueueTypeMediaProcessVideo = QueueType("media_process_video")
 )
 
 type CronType string
@@ -111,6 +151,7 @@ var (
 	CronTypeEntityCollect    = CronType("entity_collect")
 	CronTypeTrashBinCollect  = CronType("trash_bin_collect")
 	CronTypeOauthCredRefresh = CronType("oauth_cred_refresh")
+	CronTypeMediaProcess     = CronType("media_process")
 )
 
 type Theme struct {
