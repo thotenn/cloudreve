@@ -3,7 +3,7 @@ FROM alpine:latest
 WORKDIR /cloudreve
 
 RUN apk update \
-    && apk add --no-cache tzdata vips-tools ffmpeg libreoffice aria2 supervisor font-noto font-noto-cjk libheif libraw-tools\
+    && apk add --no-cache tzdata vips-tools ffmpeg pngquant libreoffice aria2 supervisor font-noto font-noto-cjk libheif libraw-tools\
     && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && echo "Asia/Shanghai" > /etc/timezone \
     && mkdir -p ./data/temp/aria2 \

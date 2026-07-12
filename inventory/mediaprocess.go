@@ -25,6 +25,11 @@ type MediaProcessClient interface {
 	// exists for the given file id. Used by the backfill sweep to avoid
 	// re-enqueuing files it has already processed once.
 	HasHandledForFile(ctx context.Context, fileID int) (bool, error)
+	// IsCompressionOutput reports whether a completed (done) row for the given file
+	// recorded the given entity as its compression output (props.OutputEntityID).
+	// Used at enqueue time to avoid re-compressing a primary entity that a prior
+	// task already produced (APP-103 RC1 anti-loop, defense-in-depth).
+	IsCompressionOutput(ctx context.Context, fileID, entityID int) (bool, error)
 	// ListPending returns up to limit pending rows of the given media type,
 	// oldest first.
 	ListPending(ctx context.Context, mediaType mediaprocesstask.MediaType, limit int) ([]*ent.MediaProcessTask, error)
@@ -89,6 +94,27 @@ func (c *mediaProcessClient) HasHandledForFile(ctx context.Context, fileID int) 
 			mediaprocesstask.StatusIn(mediaprocesstask.StatusDone, mediaprocesstask.StatusSkipped),
 		).
 		Exist(ctx)
+}
+
+func (c *mediaProcessClient) IsCompressionOutput(ctx context.Context, fileID, entityID int) (bool, error) {
+	if fileID == 0 || entityID == 0 {
+		return false, nil
+	}
+	rows, err := c.client.MediaProcessTask.Query().
+		Where(
+			mediaprocesstask.FileID(fileID),
+			mediaprocesstask.StatusEQ(mediaprocesstask.StatusDone),
+		).
+		All(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range rows {
+		if r.Props != nil && r.Props.OutputEntityID == entityID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (c *mediaProcessClient) Enqueue(ctx context.Context, args *MediaProcessEnqueueArgs) (*ent.MediaProcessTask, error) {

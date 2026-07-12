@@ -645,6 +645,11 @@ var DefaultSettings = map[string]string{
 	"media_compress_image_args":    "",
 	"media_compress_result_mode":   "version",
 	"media_compress_min_size":      "204800", // 200 KB
+	// APP-103 RC2 — image downscale + lossy PNG. Defaults keep the pre-RC2
+	// behaviour (no resize, no PNG quantization) until the admin opts in.
+	"media_compress_image_max_resolution": "",       // e.g. "1920x1080"; empty = no resize
+	"media_compress_image_png_quantize":   "0",      // lossy PNG via pngquant
+	"media_compress_image_png_quality":    "70-90",  // pngquant --quality min-max
 	// APP-103 — deferred video transcoding. Runs on its own dedicated queue
 	// (queue_media_process_video_*) so a long transcode never blocks image
 	// compression. Engine is always ffmpeg (vips does not process video).

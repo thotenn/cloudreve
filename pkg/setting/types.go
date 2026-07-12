@@ -102,6 +102,15 @@ type (
 		ExtraArgs    string // extra engine flags
 		ResultMode   string // "version" | "replace" | "auto"
 		MinSize      int64  // skip blobs smaller than this (bytes)
+		// MaxResolution caps the output at WxH, downscaling only and keeping the
+		// aspect ratio (empty = no resize). Mirrors the video knob; the big lever
+		// for shrinking large photos (APP-103 RC2).
+		MaxResolution string
+		// PngQuantize enables lossy PNG quantization via pngquant (much smaller
+		// than the lossless zlib re-encode). PngQuality is the pngquant --quality
+		// "min-max" range.
+		PngQuantize bool
+		PngQuality  string
 	}
 
 	// MediaProcessVideoSetting carries the deferred video transcoding parameters

@@ -196,6 +196,10 @@ func (m *manager) generateThumb(ctx context.Context, uri *fs.URI, ext string, es
 
 		// Generating thumb can be triggered by users with read-only permission. We can bypass update permission check.
 		ctx = dbfs.WithBypassOwnerCheck(ctx)
+		// Writing a thumbnail entity must not enqueue media compression of the file's
+		// primary: it would re-compress the already-compressed primary on every
+		// browse (APP-103 RC1 loop). Mirror the compression write-back guard.
+		ctx = withSkipMediaProcessEnqueue(ctx)
 
 		file, err := m.Update(ctx, req, fs.WithEntityType(types.EntityTypeThumbnail))
 		if err != nil {

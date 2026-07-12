@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/cloudreve/Cloudreve/v4/ent/mediaprocesstask"
+	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -159,4 +160,55 @@ func TestMediaProcessHasHandledForFile(t *testing.T) {
 	handled, err = c.HasHandledForFile(ctx, 0)
 	require.NoError(t, err)
 	assert.False(t, handled)
+}
+
+// TestMediaProcessIsCompressionOutput covers APP-103 RC1: a done row records its
+// produced version in props.OutputEntityID, and IsCompressionOutput reports true
+// only for that (file, output-entity) pair — the anti-loop enqueue guard.
+func TestMediaProcessIsCompressionOutput(t *testing.T) {
+	ctx := context.Background()
+	client := newTestClient(t)
+	c := NewMediaProcessClient(client, "sqlite")
+
+	// No rows yet.
+	out, err := c.IsCompressionOutput(ctx, 500, 950)
+	require.NoError(t, err)
+	assert.False(t, out)
+
+	// Compress entity 900 of file 500 → produces version entity 950.
+	row, err := c.Enqueue(ctx, &MediaProcessEnqueueArgs{EntityID: 900, FileID: 500, OwnerID: 1, MediaType: mediaprocesstask.MediaTypeImage})
+	require.NoError(t, err)
+
+	// Still pending → not yet an output.
+	out, err = c.IsCompressionOutput(ctx, 500, 950)
+	require.NoError(t, err)
+	assert.False(t, out)
+
+	_, err = c.SetStatus(ctx, row.ID, &MediaProcessStatusArgs{
+		Status:     mediaprocesstask.StatusDone,
+		ResultSize: 10,
+		Props:      &types.MediaProcessTaskProps{OutputEntityID: 950},
+	})
+	require.NoError(t, err)
+
+	// The produced version is recognized as a compression output.
+	out, err = c.IsCompressionOutput(ctx, 500, 950)
+	require.NoError(t, err)
+	assert.True(t, out, "version 950 was produced by compressing file 500")
+
+	// The original input entity is NOT an output; another file is unaffected.
+	out, err = c.IsCompressionOutput(ctx, 500, 900)
+	require.NoError(t, err)
+	assert.False(t, out)
+	out, err = c.IsCompressionOutput(ctx, 501, 950)
+	require.NoError(t, err)
+	assert.False(t, out)
+
+	// Zero ids never match.
+	out, err = c.IsCompressionOutput(ctx, 0, 950)
+	require.NoError(t, err)
+	assert.False(t, out)
+	out, err = c.IsCompressionOutput(ctx, 500, 0)
+	require.NoError(t, err)
+	assert.False(t, out)
 }

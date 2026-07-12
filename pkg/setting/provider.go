@@ -458,6 +458,10 @@ func (s *settingProvider) MediaProcess(ctx context.Context) *MediaProcessSetting
 		ExtraArgs:    s.getString(ctx, "media_compress_image_args", ""),
 		ResultMode:   s.getString(ctx, "media_compress_result_mode", "version"),
 		MinSize:      s.getInt64(ctx, "media_compress_min_size", 204800),
+
+		MaxResolution: s.getString(ctx, "media_compress_image_max_resolution", ""),
+		PngQuantize:   s.getBoolean(ctx, "media_compress_image_png_quantize", false),
+		PngQuality:    s.getString(ctx, "media_compress_image_png_quality", "70-90"),
 	}
 }
 
