@@ -1,0 +1,74 @@
+services:
+  cloudreve-init:
+    image: 'alpine:latest'
+    command: 'chown -R 10001:10001 /cloudreve/data'
+    volumes:
+      - 'cloudreve-data:/cloudreve/data'
+    restart: 'no'
+    deploy:
+      resources:
+        limits:
+          memory: 32M
+
+  cloudreve:
+    build:
+      context: .
+      dockerfile: Dockerfile.build
+      args:
+        CR_VERSION: "4.17.1-thotenn.1"
+    depends_on:
+      cloudreve-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - '${CLOUDREVE_HOST_PORT:-5212}:5212'
+    environment:
+      - TZ=${TZ:-UTC}
+      - CR_CONF_Database.Type=postgres
+      - CR_CONF_Database.Host=${DB_HOST:-host.docker.internal}
+      - CR_CONF_Database.User=${DB_USER:-postgres}
+      - 'CR_CONF_Database.Password=${DB_PASSWORD}'
+      - 'CR_CONF_Database.Name=${DB_NAME:-cloudreve}'
+      - CR_CONF_Database.Port=${DB_PORT:-5432}
+      - 'CR_CONF_Redis.Server=redis:6379'
+      - 'CR_CONF_Redis.Password=${SERVICE_PASSWORD_REDIS}'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      - 'cloudreve-data:/cloudreve/data'
+    healthcheck:
+      test: ['CMD', 'nc', '-z', 'localhost', '5212']
+      interval: 20s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1g
+        reservations:
+          memory: 256M
+
+  redis:
+    image: 'redis:7-alpine'
+    command: 'redis-server --requirepass ${SERVICE_PASSWORD_REDIS}'
+    restart: unless-stopped
+    volumes:
+      - 'redis-data:/data'
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', '${SERVICE_PASSWORD_REDIS}', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+volumes:
+  cloudreve-data:
+    driver: local
+  redis-data:
+    driver: local
