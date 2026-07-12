@@ -360,8 +360,17 @@ func (m *MediaCompressTask) compress(ctx context.Context, dep dependency.Dep, ro
 	}
 
 	writeCtx := withSkipMediaProcessEnqueue(dbfs.WithBypassOwnerCheck(ctx))
-	if _, err := fm.Update(writeCtx, req, fs.WithEntityType(types.EntityTypeVersion)); err != nil {
+	updatedFile, err := fm.Update(writeCtx, req, fs.WithEntityType(types.EntityTypeVersion))
+	if err != nil {
 		return fmt.Errorf("failed to write back compressed version: %w", err)
+	}
+	// Tag the produced version as this task's output so a later enqueue on this
+	// primary (e.g. via thumbnail generation) recognizes it as a compression
+	// output and skips it (APP-103 RC1 anti-loop, defense-in-depth).
+	if updatedFile != nil {
+		if outEntity := updatedFile.PrimaryEntity(); outEntity != nil {
+			props.OutputEntityID = outEntity.ID()
+		}
 	}
 
 	_, err = mpClient.SetStatus(ctx, row.ID, &inventory.MediaProcessStatusArgs{
@@ -620,6 +629,19 @@ func (m *manager) enqueueMediaProcessIfEligible(ctx context.Context, session *fs
 		return
 	}
 
+	// Only genuine primary-version uploads are eligible. Thumbnails and live-photo
+	// entities also flow through CompleteUpload — e.g. on-demand thumbnail
+	// generation when browsing (thumbnail.go) — but they must NOT enqueue a
+	// compression of the file's already-compressed primary, or every browse
+	// re-compresses it into a new version (APP-103 RC1 loop). A normal new upload
+	// carries EntityType nil (default version) or Version, so it is not affected.
+	if session != nil && session.Props != nil && session.Props.EntityType != nil {
+		switch *session.Props.EntityType {
+		case types.EntityTypeThumbnail, types.EntityTypeLivePhoto:
+			return
+		}
+	}
+
 	mimeType := ""
 	if session != nil && session.Props != nil {
 		mimeType = session.Props.MimeType
@@ -658,6 +680,14 @@ func (m *manager) enqueueMediaProcessIfEligible(ctx context.Context, session *fs
 	}
 
 	mpClient := m.dep.MediaProcessClient()
+	// Idempotency (defense-in-depth): never re-enqueue an entity that is itself the
+	// output of a prior compression of this file, regardless of what triggered the
+	// upload completion. Fail-open: on query error fall through to HasActive.
+	if out, err := mpClient.IsCompressionOutput(ctx, file.ID(), entity.ID()); err != nil {
+		m.l.Warning("media process: compression-output check failed for entity %d: %s", entity.ID(), err)
+	} else if out {
+		return
+	}
 	if active, err := mpClient.HasActive(ctx, entity.ID()); err != nil {
 		m.l.Warning("media process: active-row check failed for entity %d: %s", entity.ID(), err)
 		return

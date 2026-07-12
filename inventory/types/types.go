@@ -38,6 +38,12 @@ type (
 		Format       string `json:"format,omitempty"`
 		OriginalSize int64  `json:"original_size,omitempty"`
 		Signature    string `json:"signature,omitempty"`
+		// OutputEntityID is the id of the version entity produced by a successful
+		// compression write-back. Recorded on completion so a later enqueue on the
+		// same primary (e.g. triggered by on-demand thumbnail generation) can
+		// recognize it as a compression output and skip it — preventing the
+		// re-compression loop (APP-103 RC1).
+		OutputEntityID int `json:"output_entity_id,omitempty"`
 	}
 
 	ShareLinksInProfileLevel string
