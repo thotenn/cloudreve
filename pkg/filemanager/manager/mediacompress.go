@@ -423,6 +423,34 @@ func compressImage(ctx context.Context, mp *setting.MediaProcessSetting, setting
 
 	outputPath := filepath.Join(tempDir, fmt.Sprintf("out_%s.%s", uuid.Must(uuid.NewV4()).String(), targetExt))
 
+	w, h, resize := parseResolution(mp.MaxResolution)
+
+	// Encode (optionally downscaling). Fail-open: if a resizing encode fails, retry
+	// a plain re-encode so we never regress to "no compression" (APP-103 RC2).
+	if err := runImageEncode(ctx, mp, settings, inputPath, outputPath, targetExt, w, h, resize); err != nil {
+		if !resize {
+			return "", "", err
+		}
+		if err2 := runImageEncode(ctx, mp, settings, inputPath, outputPath, targetExt, 0, 0, false); err2 != nil {
+			return "", "", err2
+		}
+	}
+
+	// Lossy PNG quantization (best-effort; only replaces the file when smaller).
+	if targetExt == "png" && mp.PngQuantize {
+		pngquantInPlace(ctx, outputPath, mp.PngQuality)
+	}
+
+	return outputPath, targetExt, nil
+}
+
+// runImageEncode invokes the configured engine to (optionally) downscale to WxH
+// and re-encode inputPath into outputPath at mp.Quality. vips uses `vips thumbnail
+// ... --size down` when resizing (downscale-only) and `vips copy` otherwise;
+// ffmpeg uses a -vf scale filter. Extra engine flags go before the output.
+func runImageEncode(ctx context.Context, mp *setting.MediaProcessSetting, settings setting.Provider, inputPath, outputPath, targetExt string, w, h int, resize bool) error {
+	extra := strings.Fields(strings.TrimSpace(mp.ExtraArgs))
+
 	var (
 		bin  string
 		args []string
@@ -430,18 +458,26 @@ func compressImage(ctx context.Context, mp *setting.MediaProcessSetting, setting
 	switch strings.ToLower(mp.Engine) {
 	case "ffmpeg":
 		bin = settings.FFMpegPath(ctx)
-		a, err := ffmpegCompressArgs(inputPath, outputPath, targetExt, mp.Quality)
+		scale := ""
+		if resize {
+			scale = scaleFilter(w, h)
+		}
+		a, err := ffmpegCompressArgs(inputPath, outputPath, targetExt, mp.Quality, scale, extra)
 		if err != nil {
-			return "", "", err
+			return err
 		}
 		args = a
 	default: // vips
 		bin = settings.VipsPath(ctx)
-		args = []string{"copy", inputPath, vipsOutputSpec(outputPath, targetExt, mp.Quality)}
-	}
-
-	if extra := strings.TrimSpace(mp.ExtraArgs); extra != "" {
-		args = append(args, strings.Fields(extra)...)
+		out := vipsOutputSpec(outputPath, targetExt, mp.Quality)
+		if resize {
+			// `vips thumbnail` resizes + re-encodes in one call; --size down never
+			// upscales a smaller source.
+			args = []string{"thumbnail", inputPath, out, strconv.Itoa(w), "--height", strconv.Itoa(h), "--size", "down"}
+		} else {
+			args = []string{"copy", inputPath, out}
+		}
+		args = append(args, extra...)
 	}
 
 	cmd := exec.CommandContext(ctx, bin, args...)
@@ -449,10 +485,42 @@ func compressImage(ctx context.Context, mp *setting.MediaProcessSetting, setting
 	cmd.Stderr = &stdErr
 	if err := cmd.Run(); err != nil {
 		os.Remove(outputPath)
-		return "", "", fmt.Errorf("failed to invoke %s: %w, output: %s", bin, err, stdErr.String())
+		return fmt.Errorf("failed to invoke %s: %w, output: %s", bin, err, stdErr.String())
 	}
+	return nil
+}
 
-	return outputPath, targetExt, nil
+// pngquantInPlace quantizes a PNG in place, keeping the result only when it is
+// valid and smaller. Best-effort: a missing pngquant binary or a pngquant failure
+// (e.g. it cannot meet the quality floor) leaves the file untouched (fail-open).
+func pngquantInPlace(ctx context.Context, pngPath, qualityRange string) {
+	bin, err := exec.LookPath("pngquant")
+	if err != nil {
+		return
+	}
+	qr := strings.TrimSpace(qualityRange)
+	if qr == "" {
+		qr = "70-90"
+	}
+	tmp := pngPath + ".pq"
+	cmd := exec.CommandContext(ctx, bin, "--quality="+qr, "--strip", "--force", "--output", tmp, "--", pngPath)
+	if err := cmd.Run(); err != nil {
+		os.Remove(tmp)
+		return
+	}
+	ti, err := os.Stat(tmp)
+	if err != nil || ti.Size() == 0 {
+		os.Remove(tmp)
+		return
+	}
+	oi, err := os.Stat(pngPath)
+	if err != nil || ti.Size() >= oi.Size() {
+		os.Remove(tmp)
+		return
+	}
+	if err := os.Rename(tmp, pngPath); err != nil {
+		os.Remove(tmp)
+	}
 }
 
 // normalizeFormat resolves the target extension from the format setting. "keep"
@@ -490,8 +558,11 @@ func vipsOutputSpec(outputPath, targetExt string, quality int) string {
 
 // ffmpegCompressArgs maps the quality (1..100, higher = better) onto ffmpeg's
 // per-codec quality flag.
-func ffmpegCompressArgs(inputPath, outputPath, targetExt string, quality int) ([]string, error) {
-	base := []string{"-y", "-i", inputPath}
+func ffmpegCompressArgs(inputPath, outputPath, targetExt string, quality int, scale string, extra []string) ([]string, error) {
+	args := []string{"-y", "-i", inputPath}
+	if scale != "" {
+		args = append(args, "-vf", scale)
+	}
 	switch targetExt {
 	case "jpg":
 		// mjpeg qscale: 2 (best) .. 31 (worst).
@@ -502,14 +573,16 @@ func ffmpegCompressArgs(inputPath, outputPath, targetExt string, quality int) ([
 		if q > 31 {
 			q = 31
 		}
-		return append(base, "-q:v", strconv.Itoa(q), outputPath), nil
+		args = append(args, "-q:v", strconv.Itoa(q))
 	case "webp":
-		return append(base, "-quality", strconv.Itoa(quality), outputPath), nil
+		args = append(args, "-quality", strconv.Itoa(quality))
 	case "png":
-		return append(base, "-compression_level", "100", outputPath), nil
+		args = append(args, "-compression_level", "100")
 	default:
 		return nil, errUnsupportedFormat
 	}
+	args = append(args, extra...)      // extra engine flags before the output
+	return append(args, outputPath), nil
 }
 
 // compressVideo transcodes a local video with ffmpeg (the only video engine; vips
@@ -591,19 +664,34 @@ func normalizeVideoContainer(container, sourceExt string) string {
 // given WxH without upscaling and keeping the aspect ratio, forcing even
 // dimensions (required by yuv420p). An empty or unparseable spec disables scaling.
 func videoScaleFilter(maxResolution string) string {
-	spec := strings.TrimSpace(maxResolution)
+	if w, h, ok := parseResolution(maxResolution); ok {
+		return scaleFilter(w, h)
+	}
+	return ""
+}
+
+// parseResolution parses a "WxH" spec into positive width/height. ok is false for
+// empty/unparseable specs (⇒ no scaling). Shared by image and video.
+func parseResolution(spec string) (int, int, bool) {
+	spec = strings.TrimSpace(spec)
 	if spec == "" {
-		return ""
+		return 0, 0, false
 	}
 	parts := strings.SplitN(strings.ToLower(spec), "x", 2)
 	if len(parts) != 2 {
-		return ""
+		return 0, 0, false
 	}
 	w, errW := strconv.Atoi(strings.TrimSpace(parts[0]))
 	h, errH := strconv.Atoi(strings.TrimSpace(parts[1]))
 	if errW != nil || errH != nil || w <= 0 || h <= 0 {
-		return ""
+		return 0, 0, false
 	}
+	return w, h, true
+}
+
+// scaleFilter builds an ffmpeg -vf scale value that caps the output at WxH without
+// upscaling, keeps the aspect ratio, and forces even dimensions (yuv420p).
+func scaleFilter(w, h int) string {
 	return fmt.Sprintf("scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2", w, h)
 }
 

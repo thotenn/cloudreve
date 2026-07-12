@@ -79,9 +79,10 @@ FROM alpine:latest AS runtime
 WORKDIR /cloudreve
 
 # Same system deps as ./Dockerfile — ffmpeg + vips-tools are what the media post-processing
-# (APP-101) needs; they ship in the image, no host ffmpeg required.
+# (APP-101) needs; they ship in the image, no host ffmpeg required. pngquant powers the
+# optional lossy PNG quantization (APP-103 RC2).
 RUN apk update \
- && apk add --no-cache tzdata vips-tools ffmpeg libreoffice aria2 supervisor \
+ && apk add --no-cache tzdata vips-tools ffmpeg pngquant libreoffice aria2 supervisor \
       font-noto font-noto-cjk libheif libraw-tools \
  && mkdir -p ./data/temp/aria2 \
  && chmod -R 766 ./data/temp/aria2
